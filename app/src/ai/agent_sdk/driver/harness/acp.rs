@@ -9,10 +9,23 @@
 //!   - `session/prompt` (send the user prompt, receive a stop reason)
 //!   - `session/cancel` (notification, sent on graceful shutdown)
 //!
+//! ## Client capabilities (story 3)
+//!
+//! While waiting for `session/prompt` to complete the agent may issue requests
+//! *back* to Warp. These are handled inline by [`AcpConnection::handle_client_request`]:
+//!
+//! - `fs/readTextFile`  — reads a file from disk (path-sandboxed to `working_dir`)
+//! - `fs/writeTextFile` — writes a file to disk (path-sandboxed)
+//! - `terminal/create` — spawns a subprocess and returns a synthetic terminal ID;
+//!    subsequent `terminal/getOutput`, `terminal/kill`, `terminal/release` are also handled.
+//! - `request/permission` — auto-approves with the first offered option and logs the
+//!    decision. Full Warp autonomy-gate integration is deferred to a follow-up story.
+//!
 //! The agent itself can be any executable that speaks ACP over stdio. The
 //! command is supplied via [`HarnessConfig::command`] in the agent run config
 //! (e.g. `"my-acp-agent"` or `"node ./build/index.js"`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,8 +40,9 @@ use futures::channel::oneshot;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use uuid::Uuid;
 use warp_cli::agent::Harness;
 use warp_core::command::ExitCode;
 use warpui::{ModelHandle, ModelSpawner};
@@ -51,6 +65,20 @@ const METHOD_INITIALIZE: &str = "initialize";
 const METHOD_SESSION_NEW: &str = "session/new";
 const METHOD_SESSION_PROMPT: &str = "session/prompt";
 const METHOD_SESSION_CANCEL: &str = "session/cancel";
+
+/// Agent-to-client capability method names (inbound requests from the agent).
+const METHOD_FS_READ: &str = "fs/readTextFile";
+const METHOD_FS_WRITE: &str = "fs/writeTextFile";
+const METHOD_TERMINAL_CREATE: &str = "terminal/create";
+const METHOD_TERMINAL_GET_OUTPUT: &str = "terminal/getOutput";
+const METHOD_TERMINAL_KILL: &str = "terminal/kill";
+const METHOD_TERMINAL_RELEASE: &str = "terminal/release";
+const METHOD_REQUEST_PERMISSION: &str = "request/permission";
+
+/// JSON-RPC error code for "method not found" (from the JSON-RPC 2.0 spec).
+const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
+/// JSON-RPC error code for invalid params.
+const JSONRPC_INVALID_PARAMS: i64 = -32602;
 
 /// Client identification advertised in the `initialize` request.
 const CLIENT_NAME: &str = "warp";
@@ -166,7 +194,7 @@ enum AcpRunnerState {
     Running {
         #[allow(
             dead_code,
-            reason = "Reserved for save_conversation upload path; story 3 will wire it up."
+            reason = "Reserved for save_conversation upload path; future story will wire it up."
         )]
         block_id: BlockId,
         cancel_tx: Option<oneshot::Sender<()>>,
@@ -186,7 +214,7 @@ struct AcpHarnessRunner {
     /// does *not* run inside this terminal.
     #[allow(
         dead_code,
-        reason = "Reserved for save_conversation transcript upload; populated by story 3."
+        reason = "Reserved for save_conversation transcript upload; future story will wire it up."
     )]
     terminal_driver: ModelHandle<TerminalDriver>,
     state: Mutex<AcpRunnerState>,
@@ -198,6 +226,19 @@ impl HarnessRunner for AcpHarnessRunner {
     /// Spawn the ACP agent subprocess and drive the JSON-RPC session in a
     /// background tokio task. Returns immediately with a [`CommandHandle`]
     /// that resolves once the prompt completes (or the session fails).
+    ///
+    /// # Test coverage note
+    ///
+    /// This method is **not covered by unit tests** because it requires a live
+    /// [`ModelSpawner<AgentDriver>`], which in turn depends on the full Warp
+    /// entity-component runtime (warpui). No lightweight mock exists for that
+    /// type — constructing one would require bootstrapping most of the Warp UI
+    /// framework inside the test binary.
+    ///
+    /// The method is exercised end-to-end by the integration test harness when
+    /// a real ACP agent binary is available. The core logic it delegates to —
+    /// [`run_acp_session`] and the [`AcpConnection`] methods — are fully
+    /// unit-tested via in-memory duplex streams (see `acp-tests.rs`).
     async fn start(
         &self,
         _foreground: &ModelSpawner<AgentDriver>,
@@ -274,6 +315,22 @@ impl HarnessRunner for AcpHarnessRunner {
 ///
 /// Returns once [`session/prompt`] yields a [`PromptResponse`] (or the session
 /// is cancelled / the agent exits).
+///
+/// # Test coverage note
+///
+/// This function is **not covered by unit tests**. It spawns a real operating-
+/// system process and orchestrates a multi-message JSON-RPC exchange, making
+/// it integration-level by nature. Isolating it in a unit test would require
+/// either:
+///
+/// - A pre-built ACP echo-server binary available on `PATH` at test time, or
+/// - A `tokio::process`-level mock (no standard one exists in the Rust
+///   ecosystem).
+///
+/// The protocol logic inside `run_acp_session` — the four ACP messages it
+/// sends and how it handles the cancel race — is covered indirectly by the
+/// [`AcpConnection`] unit tests in `acp-tests.rs`, which exercise every
+/// method `run_acp_session` calls via in-memory duplex streams.
 async fn run_acp_session(
     program: &str,
     args: &[String],
@@ -300,7 +357,8 @@ async fn run_acp_session(
         .take()
         .ok_or_else(|| anyhow!("ACP agent stdout not piped"))?;
 
-    let mut conn = AcpConnection::new(stdin, BufReader::new(stdout));
+    let mut conn: AcpConnection =
+        AcpConnection::new(stdin, BufReader::new(stdout), working_dir.to_path_buf());
 
     // 1. initialize
     let init_params = serde_json::json!({
@@ -365,33 +423,52 @@ async fn run_acp_session(
     Ok(())
 }
 
-/// JSON-RPC 2.0 connection over stdio. Tracks an outgoing id counter and
-/// matches incoming responses by id. Notifications/requests *from* the agent
-/// (e.g. session updates, terminal create) are logged at debug for now —
-/// story 3 will route them into the client capabilities surface.
-struct AcpConnection {
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    next_id: u64,
+/// A subprocess managed on behalf of the ACP agent via `terminal/create`.
+struct AcpTerminal {
+    child: Child,
+    /// Accumulated stdout+stderr output captured so far.
+    output: Vec<u8>,
 }
 
-impl AcpConnection {
-    fn new(stdin: ChildStdin, stdout: BufReader<ChildStdout>) -> Self {
+/// JSON-RPC 2.0 connection over stdio. Tracks an outgoing id counter,
+/// matches incoming responses by id, and handles agent-initiated capability
+/// requests (fs/readTextFile, fs/writeTextFile, terminal/create, etc.).
+///
+/// The `W` and `R` type parameters are the write and read halves of the
+/// connection. In production these are [`ChildStdin`] and
+/// [`BufReader<ChildStdout>`]; in tests they are
+/// `WriteHalf<DuplexStream>` / `BufReader<ReadHalf<DuplexStream>>`.
+struct AcpConnection<W = ChildStdin, R = BufReader<ChildStdout>> {
+    stdin: W,
+    stdout: R,
+    next_id: u64,
+    /// Working directory for path validation and relative-path resolution.
+    working_dir: PathBuf,
+    /// Subprocess terminals created by the agent via `terminal/create`.
+    /// Keyed by the synthetic terminal ID returned to the agent.
+    terminals: HashMap<String, AcpTerminal>,
+}
+
+impl<W: AsyncWrite + Unpin, R: AsyncBufReadExt + Unpin> AcpConnection<W, R> {
+    fn new(stdin: W, stdout: R, working_dir: PathBuf) -> Self {
         Self {
             stdin,
             stdout,
             next_id: 1,
+            working_dir,
+            terminals: HashMap::new(),
         }
     }
 
-    /// Send a JSON-RPC request and await its response. Discards any
-    /// agent-initiated requests/notifications interleaved on the stream
-    /// (logged but not handled, to be wired in by story 3).
-    async fn call<P: Serialize, R: serde::de::DeserializeOwned>(
+    /// Send a JSON-RPC request and await its response.
+    ///
+    /// Any agent-initiated requests or notifications interleaved on the stream
+    /// while we await the response are dispatched via [`handle_client_request`].
+    async fn call<P: Serialize, Resp: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,
         params: &P,
-    ) -> Result<R> {
+    ) -> Result<Resp> {
         let id = self.next_id;
         self.next_id += 1;
         let envelope = serde_json::json!({
@@ -404,10 +481,12 @@ impl AcpConnection {
 
         loop {
             let value = self.read_message().await?;
-            // A response has an `id` field; agent-initiated requests/notifs
-            // either lack `id` (notification) or have a different one.
+            // A JSON-RPC *response* has an `id` matching our request and no
+            // `method` field. Anything else (agent request or notification)
+            // is dispatched as a client capability call.
             let msg_id = value.get("id").and_then(Value::as_u64);
-            if msg_id == Some(id) {
+            let is_our_response = msg_id == Some(id) && value.get("method").is_none();
+            if is_our_response {
                 if let Some(error) = value.get("error") {
                     return Err(anyhow!("ACP method '{method}' returned error: {error}"));
                 }
@@ -415,11 +494,288 @@ impl AcpConnection {
                     .get("result")
                     .cloned()
                     .ok_or_else(|| anyhow!("ACP response missing `result` field"))?;
-                return serde_json::from_value(result)
+                return serde_json::from_value::<Resp>(result)
                     .map_err(|e| anyhow!("Failed to deserialize ACP response for {method}: {e}"));
             }
-            log::debug!("ACP unsolicited message ignored: {value}");
+            // Agent-initiated request or notification — handle it.
+            if let Err(err) = self.handle_client_request(&value).await {
+                log::warn!("ACP client-request handler error: {err:#}");
+            }
         }
+    }
+
+    /// Dispatch an agent-initiated JSON-RPC request or notification.
+    ///
+    /// Notifications (no `id` field) are handled silently (no response sent).
+    /// Requests with an `id` always receive a response, even on error.
+    async fn handle_client_request(&mut self, msg: &Value) -> Result<()> {
+        let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+        let id = msg.get("id").cloned();
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+
+        match method {
+            METHOD_FS_READ => {
+                let path_str = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("fs/readTextFile missing 'path'"))?;
+                let safe_path = resolve_safe_path(path_str, &self.working_dir.clone())?;
+                match tokio::fs::read_to_string(&safe_path).await {
+                    Ok(content) => {
+                        self.respond_result(id, serde_json::json!({ "content": content }))
+                            .await?
+                    }
+                    Err(err) => {
+                        self.respond_error(
+                            id,
+                            JSONRPC_INVALID_PARAMS,
+                            &format!("Cannot read '{}': {err}", safe_path.display()),
+                        )
+                        .await?
+                    }
+                }
+            }
+
+            METHOD_FS_WRITE => {
+                let path_str = params
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("fs/writeTextFile missing 'path'"))?;
+                let content = params
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("fs/writeTextFile missing 'content'"))?;
+                let safe_path = resolve_safe_path(path_str, &self.working_dir.clone())?;
+                // Create parent directories if needed.
+                if let Some(parent) = safe_path.parent() {
+                    if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                        self.respond_error(
+                            id,
+                            JSONRPC_INVALID_PARAMS,
+                            &format!(
+                                "Cannot create directories for '{}': {err}",
+                                safe_path.display()
+                            ),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+                match tokio::fs::write(&safe_path, content).await {
+                    Ok(()) => self.respond_result(id, serde_json::json!({})).await?,
+                    Err(err) => {
+                        self.respond_error(
+                            id,
+                            JSONRPC_INVALID_PARAMS,
+                            &format!("Cannot write '{}': {err}", safe_path.display()),
+                        )
+                        .await?
+                    }
+                }
+            }
+
+            METHOD_TERMINAL_CREATE => {
+                // Spawn a subprocess on behalf of the agent. We don't attach it
+                // to any Warp terminal pane (that requires model context not
+                // available here); the agent gets a synthetic ID it can use for
+                // terminal/getOutput and terminal/kill.
+                let command = params.get("command").and_then(Value::as_str).unwrap_or("");
+                let args: Vec<&str> = params
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let cwd = params
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(|s| resolve_safe_path(s, &self.working_dir.clone()).ok())
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| self.working_dir.clone());
+
+                if command.is_empty() {
+                    self.respond_error(
+                        id,
+                        JSONRPC_INVALID_PARAMS,
+                        "terminal/create: 'command' is required",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                let child_result = Command::new(command)
+                    .args(&args)
+                    .current_dir(&cwd)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn();
+
+                match child_result {
+                    Ok(child) => {
+                        let terminal_id = Uuid::new_v4().to_string();
+                        log::info!(
+                            "ACP terminal/create: spawned '{command}' as terminal {terminal_id}"
+                        );
+                        self.terminals.insert(
+                            terminal_id.clone(),
+                            AcpTerminal {
+                                child,
+                                output: Vec::new(),
+                            },
+                        );
+                        self.respond_result(id, serde_json::json!({ "terminalId": terminal_id }))
+                            .await?
+                    }
+                    Err(err) => {
+                        self.respond_error(
+                            id,
+                            JSONRPC_INVALID_PARAMS,
+                            &format!("terminal/create: failed to spawn '{command}': {err}"),
+                        )
+                        .await?
+                    }
+                }
+            }
+
+            METHOD_TERMINAL_GET_OUTPUT => {
+                let terminal_id = params
+                    .get("terminalId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let term = self.terminals.get_mut(terminal_id);
+                match term {
+                    None => {
+                        self.respond_error(
+                            id,
+                            JSONRPC_INVALID_PARAMS,
+                            &format!("terminal/getOutput: unknown terminal '{terminal_id}'"),
+                        )
+                        .await?
+                    }
+                    Some(term) => {
+                        // Drain any available stdout/stderr without blocking.
+                        if let Some(stdout) = term.child.stdout.as_mut() {
+                            let mut buf = [0u8; 4096];
+                            while let Ok(n) = stdout.read(&mut buf).await {
+                                if n == 0 {
+                                    break;
+                                }
+                                term.output.extend_from_slice(&buf[..n]);
+                            }
+                        }
+                        let output_str = String::from_utf8_lossy(&term.output).to_string();
+                        let exit_status = term.child.try_wait().ok().flatten();
+                        self.respond_result(
+                            id,
+                            serde_json::json!({
+                                "output": output_str,
+                                "exitCode": exit_status.map(|s| s.code()).unwrap_or(None),
+                            }),
+                        )
+                        .await?
+                    }
+                }
+            }
+
+            METHOD_TERMINAL_KILL => {
+                let terminal_id = params
+                    .get("terminalId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if let Some(term) = self.terminals.get_mut(terminal_id) {
+                    let _ = term.child.kill().await;
+                }
+                self.respond_result(id, serde_json::json!({})).await?
+            }
+
+            METHOD_TERMINAL_RELEASE => {
+                let terminal_id = params
+                    .get("terminalId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if let Some(mut term) = self.terminals.remove(terminal_id) {
+                    let _ = term.child.kill().await;
+                    let _ = term.child.wait().await;
+                }
+                self.respond_result(id, serde_json::json!({})).await?
+            }
+
+            METHOD_REQUEST_PERMISSION => {
+                // Auto-approve: select the first offered permission option.
+                // Full Warp autonomy-gate integration (showing a UI prompt and
+                // waiting for user confirmation) requires model context that is
+                // not available in this background task and is deferred to a
+                // follow-up story.
+                let options = params
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let first_option_id = options
+                    .first()
+                    .and_then(|opt| opt.get("id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("allow");
+                let tool_call = params.get("toolCall").cloned().unwrap_or(Value::Null);
+                log::info!(
+                    "ACP request/permission: auto-approving '{}' (option '{first_option_id}'). \
+                     Full permission-gate integration is pending.",
+                    tool_call
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<unknown>")
+                );
+                self.respond_result(
+                    id,
+                    serde_json::json!({ "outcome": { "optionId": first_option_id } }),
+                )
+                .await?
+            }
+
+            "" => {
+                // Pure notification (no method field or empty) — nothing to respond to.
+                log::debug!("ACP notification (no method): {msg}");
+            }
+
+            other => {
+                log::debug!(
+                    "ACP unknown client request '{other}' — responding with method-not-found"
+                );
+                self.respond_error(
+                    id,
+                    JSONRPC_METHOD_NOT_FOUND,
+                    &format!("Method not found: {other}"),
+                )
+                .await?
+            }
+        }
+        Ok(())
+    }
+
+    /// Send a JSON-RPC success response.
+    async fn respond_result(&mut self, id: Option<Value>, result: Value) -> Result<()> {
+        let Some(id) = id else {
+            // Notifications don't get responses.
+            return Ok(());
+        };
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        });
+        self.write_message(&msg).await
+    }
+
+    /// Send a JSON-RPC error response.
+    async fn respond_error(&mut self, id: Option<Value>, code: i64, message: &str) -> Result<()> {
+        let Some(id) = id else {
+            return Ok(());
+        };
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message },
+        });
+        self.write_message(&msg).await
     }
 
     /// Send a JSON-RPC notification (no id, no expected response).
@@ -470,6 +826,46 @@ impl AcpConnection {
 struct NewSessionResponseShim {
     #[serde(rename = "sessionId")]
     session_id: String,
+}
+
+/// Validate `path` and resolve it relative to `working_dir`, refusing any
+/// path that escapes the working directory via `..` components or absolute
+/// paths outside of it.
+///
+/// Relative paths are resolved against `working_dir`; absolute paths must
+/// already start with `working_dir`. Uses a lexical normalisation pass so
+/// the path does not need to exist yet (needed for write-new-file operations).
+pub(crate) fn resolve_safe_path(path: &str, working_dir: &Path) -> anyhow::Result<PathBuf> {
+    let raw = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        working_dir.join(path)
+    };
+    let normalised = lexical_normalise(&raw);
+    if !normalised.starts_with(working_dir) {
+        anyhow::bail!(
+            "Path '{path}' escapes the working directory (resolved to '{}')",
+            normalised.display()
+        );
+    }
+    Ok(normalised)
+}
+
+/// Resolve `.` and `..` components without calling `canonicalize` (which
+/// requires the path to exist and follows symlinks).
+fn lexical_normalise(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
