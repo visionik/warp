@@ -343,9 +343,12 @@ fn build_merged_config_and_task(
         None => (None, None),
     };
 
+    // Source the ACP `command` (if any) from the config file's harness block.
+    // CLI flags don't set this today; story 4 may add a flag.
+    let acp_command = file_merged.harness.as_ref().and_then(|h| h.command.clone());
     let harness_override = (args.harness != Harness::Oz).then_some(HarnessConfig {
         harness_type: args.harness,
-        command: None,
+        command: acp_command.clone(),
     });
 
     let mut merged_config = AgentConfigSnapshot {
@@ -401,7 +404,7 @@ fn build_merged_config_and_task(
         model: model_override,
         profile: args.profile.clone(),
         mcp_specs: runtime_mcp_specs,
-        harness: harness_kind(args.harness)?,
+        harness: harness_kind(args.harness, acp_command)?,
     };
 
     Ok((merged_config, task))
@@ -462,7 +465,10 @@ fn build_server_side_task(
         model: model_override,
         profile,
         mcp_specs: runtime_mcp_specs,
-        harness: harness_kind(args.harness)?,
+        // Server-side tasks don't have a local config file to source the
+        // ACP command from. The ACP harness will fail validation here
+        // unless a future story adds a CLI flag for it.
+        harness: harness_kind(args.harness, None)?,
     };
 
     Ok((config, task))

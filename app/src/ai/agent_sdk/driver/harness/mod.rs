@@ -34,11 +34,13 @@ use super::{
     OZ_MESSAGE_LISTENER_STATE_ROOT_ENV,
 };
 
+mod acp;
 mod claude_code;
 pub(crate) mod claude_transcript;
 mod gemini;
 mod json_utils;
 
+use acp::AcpHarness;
 pub(crate) use claude_code::ClaudeHarness;
 use claude_transcript::ClaudeResumeInfo;
 use gemini::GeminiHarness;
@@ -159,17 +161,24 @@ impl fmt::Debug for HarnessKind {
 
 /// Build a [`HarnessKind`] for the given [`Harness`].
 ///
+/// `acp_command` is the launch command used by the ACP harness (sourced from
+/// [`crate::ai::ambient_agents::task::HarnessConfig::command`]); it's
+/// required when `harness == Harness::Acp` and ignored otherwise.
+///
 /// We shouldn't ever get a `--harness unknown` here because clap should handle
 /// it.
-pub(crate) fn harness_kind(harness: Harness) -> Result<HarnessKind, AgentDriverError> {
+pub(crate) fn harness_kind(
+    harness: Harness,
+    acp_command: Option<String>,
+) -> Result<HarnessKind, AgentDriverError> {
     match harness {
         Harness::Oz => Ok(HarnessKind::Oz),
         Harness::Claude => Ok(HarnessKind::ThirdParty(Box::new(ClaudeHarness))),
         Harness::OpenCode => Ok(HarnessKind::Unsupported(Harness::OpenCode)),
         Harness::Gemini => Ok(HarnessKind::ThirdParty(Box::new(GeminiHarness))),
-        // ACP harness runner implemented in story 2 (acp-core-harness).
-        // Using Unsupported as a compile-time placeholder so exhaustive matching is satisfied.
-        Harness::Acp => Ok(HarnessKind::Unsupported(Harness::Acp)),
+        Harness::Acp => Ok(HarnessKind::ThirdParty(Box::new(AcpHarness::new(
+            acp_command,
+        )?))),
         Harness::Unknown => Err(AgentDriverError::InvalidRuntimeState),
     }
 }

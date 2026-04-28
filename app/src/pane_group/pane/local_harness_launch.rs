@@ -59,7 +59,10 @@ pub(super) fn build_local_opencode_child_command(prompt: &str) -> String {
 
 fn local_child_task_config(harness: Harness) -> Option<AgentConfigSnapshot> {
     match harness {
-        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Unknown => None,
+        // ACP is launched via the standalone agent driver as a piped
+        // background subprocess (see [`super::super::ai::agent_sdk::driver::harness::acp`]),
+        // so it never goes through the local-child-pane launch path here.
+        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Acp | Harness::Unknown => None,
         Harness::Claude => Some(AgentConfigSnapshot {
             harness: Some(HarnessConfig::from_harness_type(harness)),
             ..Default::default()
@@ -124,6 +127,7 @@ pub(super) async fn prepare_local_harness_child_launch(
             build_local_opencode_child_command(&prompt)
         }
         Harness::Gemini => unreachable!("normalize_local_child_harness filters out Gemini"),
+        Harness::Acp => unreachable!("normalize_local_child_harness filters out Acp"),
     };
 
     let task_id = ai_client
