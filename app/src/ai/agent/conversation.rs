@@ -3494,6 +3494,8 @@ pub enum AIAgentHarness {
     Oz,
     ClaudeCode,
     Gemini,
+    /// ACP (Agent Client Protocol) harness — any ACP-compliant coding agent subprocess.
+    Acp,
     Unknown,
 }
 

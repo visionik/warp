@@ -760,6 +760,10 @@ pub enum FeatureFlag {
     /// CLIs (e.g. `claude`) to execute prompts instead of Warp's agent harness.
     AgentHarness,
 
+    /// Enables the ACP (Agent Client Protocol) harness, allowing any ACP-compliant
+    /// coding agent subprocess to be used from Warp via stdio JSON-RPC.
+    AcpHarness,
+
     /// Enables workspace- and block-snapshot handoff between cloud agent runs
     /// and the local Warp client.
     /// When enabled:
@@ -901,6 +905,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::CodeReviewScrollPreservation,
     FeatureFlag::OzIdentityFederation,
     FeatureFlag::AgentHarness,
+    FeatureFlag::AcpHarness,
     FeatureFlag::OzHandoff,
     FeatureFlag::ConversationApi,
     FeatureFlag::RememberFastForwardState,

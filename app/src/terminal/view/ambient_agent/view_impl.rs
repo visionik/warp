@@ -488,6 +488,8 @@ impl TerminalView {
             Harness::Claude => matches!(cli_agent, CLIAgent::Claude),
             Harness::OpenCode => matches!(cli_agent, CLIAgent::OpenCode),
             Harness::Gemini => matches!(cli_agent, CLIAgent::Gemini),
+            // ACP runs as a background process, not a terminal subprocess.
+            Harness::Acp => false,
             Harness::Unknown => false,
         }
     }

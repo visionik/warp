@@ -345,6 +345,7 @@ fn build_merged_config_and_task(
 
     let harness_override = (args.harness != Harness::Oz).then_some(HarnessConfig {
         harness_type: args.harness,
+        command: None,
     });
 
     let mut merged_config = AgentConfigSnapshot {
@@ -429,6 +430,7 @@ fn build_server_side_task(
 
     let harness_override = (args.harness != Harness::Oz).then_some(HarnessConfig {
         harness_type: args.harness,
+        command: None,
     });
 
     let skill_name = resolved_skill.as_ref().map(|s| s.name.clone());
@@ -1389,6 +1391,7 @@ fn resolve_orchestration_harness_label() -> &'static str {
         Some(Harness::Claude) => "claude",
         Some(Harness::OpenCode) => "opencode",
         Some(Harness::Gemini) => "gemini",
+        Some(Harness::Acp) => "acp",
         Some(Harness::Unknown) | None => "unknown",
     }
 }
