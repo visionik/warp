@@ -1,8 +1,10 @@
+use std::path::{Path, PathBuf};
+
 use warp_cli::agent::Harness;
 
 use super::super::super::AgentDriverError;
 use super::super::{harness_kind, HarnessKind};
-use super::{AcpHarness, ThirdPartyHarness};
+use super::{resolve_safe_path, AcpHarness, ThirdPartyHarness};
 
 fn assert_harness_setup_failed(err: &AgentDriverError) -> (&str, &str) {
     match err {
@@ -93,4 +95,59 @@ fn harness_kind_acp_with_command_returns_third_party() {
 fn harness_kind_oz_ignores_acp_command() {
     let kind = harness_kind(Harness::Oz, Some("ignored".into())).unwrap();
     assert_eq!(kind.harness(), Harness::Oz);
+}
+
+// ── resolve_safe_path tests ──────────────────────────────────────────────────
+
+fn wd() -> PathBuf {
+    PathBuf::from("/home/user/project")
+}
+
+#[test]
+fn safe_path_relative_inside_wd() {
+    let p = resolve_safe_path("src/main.rs", &wd()).unwrap();
+    assert_eq!(p, Path::new("/home/user/project/src/main.rs"));
+}
+
+#[test]
+fn safe_path_dotslash_inside_wd() {
+    let p = resolve_safe_path("./README.md", &wd()).unwrap();
+    assert_eq!(p, Path::new("/home/user/project/README.md"));
+}
+
+#[test]
+fn safe_path_absolute_inside_wd() {
+    let p = resolve_safe_path("/home/user/project/file.txt", &wd()).unwrap();
+    assert_eq!(p, Path::new("/home/user/project/file.txt"));
+}
+
+#[test]
+fn safe_path_dotdot_escape_rejected() {
+    let err = resolve_safe_path("../../etc/passwd", &wd()).unwrap_err();
+    assert!(
+        err.to_string().contains("escapes the working directory"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn safe_path_absolute_escape_rejected() {
+    let err = resolve_safe_path("/etc/passwd", &wd()).unwrap_err();
+    assert!(
+        err.to_string().contains("escapes the working directory"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn safe_path_dotdot_then_back_inside_wd() {
+    // Goes out and comes back — should resolve to the working dir root.
+    let p = resolve_safe_path("subdir/../file.txt", &wd()).unwrap();
+    assert_eq!(p, Path::new("/home/user/project/file.txt"));
+}
+
+#[test]
+fn safe_path_deeply_nested_is_ok() {
+    let p = resolve_safe_path("a/b/c/d/e.txt", &wd()).unwrap();
+    assert_eq!(p, Path::new("/home/user/project/a/b/c/d/e.txt"));
 }
