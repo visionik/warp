@@ -103,7 +103,16 @@ const CURSOR_COLOR: ColorU = ColorU {
     a: 255,
 };
 
-/// Represents a CLI agent (e.g., Claude Code, Gemini CLI, Codex, Amp, Droid, OpenCode, Copilot, Pi, Auggie, Cursor)
+/// ACP (Agent Client Protocol) brand color — neutral grey, matching the
+/// generic SVG icon that ships with the harness.
+const ACP_COLOR: ColorU = ColorU {
+    r: 120,
+    g: 120,
+    b: 120,
+    a: 255,
+};
+
+/// Represents a CLI agent (e.g., Claude Code, Gemini CLI, Codex, Amp, Droid, OpenCode, Copilot, Pi, Auggie, Cursor, ACP)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Sequence, Serialize, Deserialize)]
 pub enum CLIAgent {
     Claude,
@@ -116,6 +125,7 @@ pub enum CLIAgent {
     Pi,
     Auggie,
     CursorCli,
+    Acp,
     /// Represents an unknown/custom CLI agent matched by user-configured regex patterns.
     Unknown,
 }
@@ -134,6 +144,7 @@ impl CLIAgent {
             CLIAgent::Pi => "pi",
             CLIAgent::Auggie => "auggie",
             CLIAgent::CursorCli => "agent",
+            CLIAgent::Acp => "acp-agent",
             CLIAgent::Unknown => "",
         }
     }
@@ -164,6 +175,7 @@ impl CLIAgent {
             CLIAgent::Pi => "Pi",
             CLIAgent::Auggie => "Auggie",
             CLIAgent::CursorCli => "Cursor",
+            CLIAgent::Acp => "ACP Agent",
             CLIAgent::Unknown => "CLI Agent",
         }
     }
@@ -181,6 +193,7 @@ impl CLIAgent {
             CLIAgent::Pi => Some(Icon::PiLogo),
             CLIAgent::Auggie => Some(Icon::AuggieLogo),
             CLIAgent::CursorCli => Some(Icon::CursorLogo),
+            CLIAgent::Acp => Some(Icon::AcpLogo),
             CLIAgent::Unknown => None,
         }
     }
@@ -208,6 +221,7 @@ impl CLIAgent {
             CLIAgent::Pi => &[SkillProvider::Agents],
             CLIAgent::Auggie => &[SkillProvider::Agents],
             CLIAgent::CursorCli => &[SkillProvider::Agents],
+            CLIAgent::Acp => &[SkillProvider::Agents],
             CLIAgent::Unknown => &[],
         }
     }
@@ -247,6 +261,7 @@ impl CLIAgent {
             CLIAgent::Pi => Some(PI_COLOR),
             CLIAgent::Auggie => Some(AUGGIE_COLOR),
             CLIAgent::CursorCli => Some(CURSOR_COLOR),
+            CLIAgent::Acp => Some(ACP_COLOR),
             CLIAgent::Unknown => None,
         }
     }
@@ -507,6 +522,7 @@ impl From<CLIAgent> for CLIAgentType {
             CLIAgent::Pi => CLIAgentType::Pi,
             CLIAgent::Auggie => CLIAgentType::Auggie,
             CLIAgent::CursorCli => CLIAgentType::Cursor,
+            CLIAgent::Acp => CLIAgentType::Acp,
             CLIAgent::Unknown => CLIAgentType::Unknown,
         }
     }

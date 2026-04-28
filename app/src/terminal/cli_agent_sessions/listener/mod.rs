@@ -46,6 +46,7 @@ pub fn is_agent_supported(agent: &CLIAgent) -> bool {
             | CLIAgent::Codex
             | CLIAgent::Gemini
             | CLIAgent::Auggie
+            | CLIAgent::Acp
     )
 }
 
@@ -56,9 +57,14 @@ fn create_handler(agent: &CLIAgent) -> Option<Box<dyn CLIAgentSessionHandler>> {
         // (https://github.com/augmentmoogi/auggie-warp), which emits the same
         // structured OSC 777 events as the first-party Claude/OpenCode/Gemini
         // plugins. We don't ship an install flow for it — we just listen.
-        CLIAgent::Claude | CLIAgent::OpenCode | CLIAgent::Gemini | CLIAgent::Auggie => {
-            Some(Box::new(DefaultSessionListener))
-        }
+        //
+        // ACP-compliant agents emit the same structured OSC 777 events when run
+        // through Warp's ACP harness, so they share the default listener too.
+        CLIAgent::Claude
+        | CLIAgent::OpenCode
+        | CLIAgent::Gemini
+        | CLIAgent::Auggie
+        | CLIAgent::Acp => Some(Box::new(DefaultSessionListener)),
         CLIAgent::Codex => Some(Box::new(CodexSessionHandler)),
         CLIAgent::Amp
         | CLIAgent::Droid
@@ -278,6 +284,46 @@ mod tests {
         let event = CLIAgentEvent {
             v: 1,
             agent: CLIAgent::Auggie,
+            event: CLIAgentEventType::Stop,
+            session_id: None,
+            cwd: None,
+            project: None,
+            payload: CLIAgentEventPayload::default(),
+        };
+        assert!(handler.handle_event(event).is_some());
+    }
+
+    #[test]
+    fn acp_is_supported() {
+        assert!(is_agent_supported(&CLIAgent::Acp));
+    }
+
+    #[test]
+    fn acp_uses_default_handler_with_rich_status() {
+        assert!(agent_supports_rich_status(&CLIAgent::Acp));
+    }
+
+    #[test]
+    fn acp_default_handler_skips_session_start() {
+        let mut handler = DefaultSessionListener;
+        let event = CLIAgentEvent {
+            v: 1,
+            agent: CLIAgent::Acp,
+            event: CLIAgentEventType::SessionStart,
+            session_id: None,
+            cwd: None,
+            project: None,
+            payload: CLIAgentEventPayload::default(),
+        };
+        assert!(handler.handle_event(event).is_none());
+    }
+
+    #[test]
+    fn acp_default_handler_forwards_stop() {
+        let mut handler = DefaultSessionListener;
+        let event = CLIAgentEvent {
+            v: 1,
+            agent: CLIAgent::Acp,
             event: CLIAgentEventType::Stop,
             session_id: None,
             cwd: None,

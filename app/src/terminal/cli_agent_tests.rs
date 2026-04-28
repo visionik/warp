@@ -511,6 +511,20 @@ fn test_from_serialized_name_falls_back_to_unknown() {
 }
 
 #[test]
+fn test_acp_basic_metadata() {
+    assert_eq!(CLIAgent::Acp.command_prefix(), "acp-agent");
+    assert_eq!(CLIAgent::Acp.display_name(), "ACP Agent");
+    assert!(
+        CLIAgent::Acp.icon().is_some(),
+        "ACP CLI agent should have an icon",
+    );
+    assert!(
+        CLIAgent::Acp.brand_color().is_some(),
+        "ACP CLI agent should have a brand color",
+    );
+}
+
+#[test]
 fn test_detect_aifx_agent_run_claude_wrong_team() {
     App::test((), |mut app| async move {
         let other_workspace = workspace_with_team_uid("some-other-team-uid-01");

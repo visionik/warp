@@ -31,8 +31,7 @@ pub fn icon_for(harness: Harness) -> Icon {
         Harness::Claude => Icon::ClaudeLogo,
         Harness::OpenCode => Icon::OpenCodeLogo,
         Harness::Gemini => Icon::GeminiLogo,
-        // Placeholder icon until AcpLogo is added in the UI integration story.
-        Harness::Acp => Icon::HelpCircle,
+        Harness::Acp => Icon::AcpLogo,
         Harness::Unknown => Icon::HelpCircle,
     }
 }
