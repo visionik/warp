@@ -15,6 +15,7 @@ use warpui::{
 };
 
 use warp_cli::agent::Harness;
+use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::Fill;
@@ -229,12 +230,16 @@ fn build_menu_items(
         )
     };
 
-    vec![
+    let mut items = vec![
         header,
         item_for(Harness::Oz),
         item_for(Harness::Claude),
         item_for(Harness::Gemini),
-    ]
+    ];
+    if FeatureFlag::AcpHarness.is_enabled() {
+        items.push(item_for(Harness::Acp));
+    }
+    items
 }
 
 impl Entity for HarnessSelector {

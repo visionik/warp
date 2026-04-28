@@ -74,12 +74,17 @@ pub struct HarnessConfig {
         deserialize_with = "deserialize_harness"
     )]
     pub harness_type: Harness,
+    /// For [`Harness::Acp`]: the command used to launch the ACP agent subprocess.
+    /// Must be the name or path of an ACP-compliant binary (e.g. `"my-acp-agent"`).
+    /// Ignored for all other harness types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 impl HarnessConfig {
     /// Builds a harness config from just the harness type.
     pub fn from_harness_type(harness_type: Harness) -> Self {
-        Self { harness_type }
+        Self { harness_type, command: None }
     }
 }
 
@@ -92,6 +97,7 @@ pub(crate) fn harness_from_name(name: &str) -> Harness {
         "claude" => Harness::Claude,
         "opencode" => Harness::OpenCode,
         "gemini" => Harness::Gemini,
+        "acp" => Harness::Acp,
         "oz" => Harness::Oz,
         other => {
             log::warn!("Unknown harness config name: {other:?}; treating as Unknown");

@@ -167,6 +167,9 @@ pub(crate) fn harness_kind(harness: Harness) -> Result<HarnessKind, AgentDriverE
         Harness::Claude => Ok(HarnessKind::ThirdParty(Box::new(ClaudeHarness))),
         Harness::OpenCode => Ok(HarnessKind::Unsupported(Harness::OpenCode)),
         Harness::Gemini => Ok(HarnessKind::ThirdParty(Box::new(GeminiHarness))),
+        // ACP harness runner implemented in story 2 (acp-core-harness).
+        // Using Unsupported as a compile-time placeholder so exhaustive matching is satisfied.
+        Harness::Acp => Ok(HarnessKind::Unsupported(Harness::Acp)),
         Harness::Unknown => Err(AgentDriverError::InvalidRuntimeState),
     }
 }
