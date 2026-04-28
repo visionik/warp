@@ -40,7 +40,7 @@ use futures::channel::oneshot;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use uuid::Uuid;
 use warp_cli::agent::Harness;
@@ -328,7 +328,8 @@ async fn run_acp_session(
         .take()
         .ok_or_else(|| anyhow!("ACP agent stdout not piped"))?;
 
-    let mut conn = AcpConnection::new(stdin, BufReader::new(stdout), working_dir.to_path_buf());
+    let mut conn: AcpConnection =
+        AcpConnection::new(stdin, BufReader::new(stdout), working_dir.to_path_buf());
 
     // 1. initialize
     let init_params = serde_json::json!({
@@ -403,9 +404,14 @@ struct AcpTerminal {
 /// JSON-RPC 2.0 connection over stdio. Tracks an outgoing id counter,
 /// matches incoming responses by id, and handles agent-initiated capability
 /// requests (fs/readTextFile, fs/writeTextFile, terminal/create, etc.).
-struct AcpConnection {
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+///
+/// The `W` and `R` type parameters are the write and read halves of the
+/// connection. In production these are [`ChildStdin`] and
+/// [`BufReader<ChildStdout>`]; in tests they are
+/// `WriteHalf<DuplexStream>` / `BufReader<ReadHalf<DuplexStream>>`.
+struct AcpConnection<W = ChildStdin, R = BufReader<ChildStdout>> {
+    stdin: W,
+    stdout: R,
     next_id: u64,
     /// Working directory for path validation and relative-path resolution.
     working_dir: PathBuf,
@@ -414,8 +420,8 @@ struct AcpConnection {
     terminals: HashMap<String, AcpTerminal>,
 }
 
-impl AcpConnection {
-    fn new(stdin: ChildStdin, stdout: BufReader<ChildStdout>, working_dir: PathBuf) -> Self {
+impl<W: AsyncWrite + Unpin, R: AsyncBufReadExt + Unpin> AcpConnection<W, R> {
+    fn new(stdin: W, stdout: R, working_dir: PathBuf) -> Self {
         Self {
             stdin,
             stdout,
@@ -429,11 +435,11 @@ impl AcpConnection {
     ///
     /// Any agent-initiated requests or notifications interleaved on the stream
     /// while we await the response are dispatched via [`handle_client_request`].
-    async fn call<P: Serialize, R: serde::de::DeserializeOwned>(
+    async fn call<P: Serialize, Resp: serde::de::DeserializeOwned>(
         &mut self,
         method: &str,
         params: &P,
-    ) -> Result<R> {
+    ) -> Result<Resp> {
         let id = self.next_id;
         self.next_id += 1;
         let envelope = serde_json::json!({
@@ -459,7 +465,7 @@ impl AcpConnection {
                     .get("result")
                     .cloned()
                     .ok_or_else(|| anyhow!("ACP response missing `result` field"))?;
-                return serde_json::from_value(result)
+                return serde_json::from_value::<Resp>(result)
                     .map_err(|e| anyhow!("Failed to deserialize ACP response for {method}: {e}"));
             }
             // Agent-initiated request or notification — handle it.
