@@ -562,6 +562,23 @@ impl CommandHandle {
     pub fn block_id(&self) -> &BlockId {
         &self.block_id
     }
+
+    /// Construct a `CommandHandle` from an externally-managed exit-status
+    /// channel and a synthetic [`BlockId`].
+    ///
+    /// Used by harnesses that drive command execution outside of the
+    /// terminal-driver path (for example, a piped JSON-RPC subprocess) and
+    /// therefore need to surface a [`CommandHandle`]-shaped result without
+    /// going through [`TerminalDriver::execute_command`].
+    pub(crate) fn from_channel(
+        exit_status_rx: oneshot::Receiver<ExitCode>,
+        block_id: BlockId,
+    ) -> Self {
+        Self {
+            exit_status_rx,
+            block_id,
+        }
+    }
 }
 
 impl Future for CommandHandle {
