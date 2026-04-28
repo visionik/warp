@@ -17,9 +17,9 @@
 //! - `fs/readTextFile`  — reads a file from disk (path-sandboxed to `working_dir`)
 //! - `fs/writeTextFile` — writes a file to disk (path-sandboxed)
 //! - `terminal/create` — spawns a subprocess and returns a synthetic terminal ID;
-//!    subsequent `terminal/getOutput`, `terminal/kill`, `terminal/release` are also handled.
+//!   subsequent `terminal/getOutput`, `terminal/kill`, `terminal/release` are also handled.
 //! - `request/permission` — auto-approves with the first offered option and logs the
-//!    decision. Full Warp autonomy-gate integration is deferred to a follow-up story.
+//!   decision. Full Warp autonomy-gate integration is deferred to a follow-up story.
 //!
 //! The agent itself can be any executable that speaks ACP over stdio. The
 //! command is supplied via [`HarnessConfig::command`] in the agent run config
