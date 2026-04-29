@@ -1,0 +1,23 @@
+# Example agent config for the ACP harness.
+#
+# Usage:
+#   warp agent run --harness acp -f docs/acp/config-example.yaml --prompt "..."
+#
+# See docs/acp/integration-testing.md for full instructions.
+
+harness:
+  # Must be "acp" to activate Harness::Acp.
+  type: acp
+
+  # Full shell command used to launch the ACP agent subprocess.
+  # Parsed with shlex so arguments are supported, e.g.:
+  #   command: node /path/to/agent/index.js --model gpt-4o
+  command: python3 docs/acp/echo-agent.py
+
+# Optional: override the model used for this run.
+# model_id: claude-opus-4-5
+
+# Optional: MCP servers to forward to the agent in session/new.
+# mcp_servers:
+#   my-server:
+#     command: npx my-mcp-server
